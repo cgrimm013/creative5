@@ -8,12 +8,34 @@ app.use(bodyParser.urlencoded({
   extended: false
 }));
 
+const verifyToken = (req, res, next) => {
+  const token = req.headers['authorization'];
+  if (!token)
+    return res.status(403).send({ error: 'No token provided.' });
+  jwt.verify(token, jwtSecret, function(err, decoded) {
+    if (err)
+      return res.status(500).send({ error: 'Failed to authenticate token.' });
+    // if everything good, save to request for use in other routes
+    req.userID = decoded.id;
+    next();
+  });
+}
+
 app.use(express.static('public'));
 
 // Knex Setup
 const env = process.env.NODE_ENV || 'development';
 const config = require('./knexfile')[env];
 const knex = require('knex')(config);
+
+// jwt setup
+const jwt = require('jsonwebtoken');
+let jwtSecret = process.env.jwtSecret;
+if (jwtSecret === undefined) {
+  console.log("You need to define a jwtSecret environment variable to continue.");
+  knex.destroy();
+  process.exit();
+}
 
 // bcrypt setup
 let bcrypt = require('bcrypt');
@@ -29,16 +51,23 @@ app.post('/api/login', (req, res) => {
     }
     return [bcrypt.compare(req.body.password, user.hash), user];
   }).spread((result, user) => {
-    if (result)
+    if (result) {
+      let token = jwt.sign({
+        id: user.id
+      }, jwtSecret, {
+        expiresIn: 86400 // expires in 24 hours
+      });
       res.status(200).json({
         user: {
           username: user.username,
           name: user.name,
           id: user.id
-        }
+        },
+        token: token
       });
-    else
+    } else {
       res.status(403).send("Invalid credentials");
+    }
     return;
   }).catch(error => {
     if (error.message !== 'abort') {
@@ -69,8 +98,14 @@ app.post('/api/users', (req, res) => {
   }).then(ids => {
     return knex('users').where('id', ids[0]).first().select('email', 'name', 'id');
   }).then(user => {
+    let token = jwt.sign({
+      id: user.id
+    }, jwtSecret, {
+      expiresIn: 86400 // expires in 24 hours
+    });
     res.status(200).json({
-      user: user
+      user: user,
+      token: token
     });
     return;
   }).catch(error => {
@@ -83,36 +118,67 @@ app.post('/api/users', (req, res) => {
   });
 });
 
-app.get('/api/users/:id/ideas', (req, res) => {
+app.get('/api/users/:id/ideas', verifyToken, (req, res) => {
   let id = parseInt(req.params.id);
-  knex('users').join('ideas','users.id','ideas.user_id')
-    .where('users.id',id)
-    .orderBy('created','desc')
-    .select('ideas.id', 'img','adj','adjDef', 'noun', 'nounDef', 'created').then(ideas => {
-      res.status(200).json({ideas:ideas});
+  console.log("id", id);
+  console.log("req.userID", req.userID);
+  if (id !== req.userID) {
+    res.status(403).send();
+    return;
+  }
+  knex('users').join('ideas', 'users.id', 'ideas.user_id')
+    .where('users.id', id)
+    .orderBy('created', 'desc')
+    .select('ideas.id', 'img', 'adj', 'adjDef', 'noun', 'nounDef', 'created').then(ideas => {
+      res.status(200).json({
+        ideas: ideas
+      });
     }).catch(error => {
-      res.status(500).json({ error });
+      res.status(500).json({
+        error
+      });
     });
 });
 
-app.post('/api/users/:id/ideas', (req, res) => {
+app.post('/api/users/:id/ideas', verifyToken, (req, res) => {
   let id = parseInt(req.params.id);
-  knex('users').where('id',id).first().then(user => {
-    return knex('ideas').insert({user_id: id, img:req.body.img, adj:req.body.adj, adjDef:req.body.adjDef, noun:req.body.noun, nounDef:req.body.nounDef, created: new Date()});
+  if (id !== req.userID) {
+    res.status(403).send();
+    return;
+  }
+  knex('users').where('id', id).first().then(user => {
+    return knex('ideas').insert({
+      user_id: id,
+      img: req.body.img,
+      adj: req.body.adj,
+      adjDef: req.body.adjDef,
+      noun: req.body.noun,
+      nounDef: req.body.nounDef,
+      created: new Date()
+    });
   }).then(ids => {
-    return knex('ideas').where('id',ids[0]).first();
+    return knex('ideas').where('id', ids[0]).first();
   }).then(idea => {
-    res.status(200).json({ idea:idea });
+    res.status(200).json({
+      idea: idea
+    });
     return;
   }).catch(error => {
     console.log(error);
-    res.status(500).json({ error });
+    res.status(500).json({
+      error
+    });
   });
 });
 
-app.delete('/api/users/:id/ideas', (req, res) => {
-  //let id = parseInt(req.params.id); //not needed
-  let ideaID = parseInt(req.body.id);
+app.delete('/api/users/:id/ideas/:ideaID', verifyToken, (req, res) => {
+  let id = parseInt(req.params.id); //not needed
+  if (id !== req.userID) {
+    res.status(403).send();
+    return;
+  }
+
+  let ideaID = parseInt(req.params.ideaID);
   knex('ideas').where('id', ideaID).first().then(idea => {
     return knex('ideas').where('id', ideaID).first().del()
   }).then(ids => {
@@ -123,6 +189,16 @@ app.delete('/api/users/:id/ideas', (req, res) => {
     res.status(500).json({
       error
     });
+  });
+});
+
+// Get my account
+app.get('/api/me', verifyToken, (req,res) => {
+  console.log("req.userID in api/me", req.userID);
+  knex('users').where('id',req.userID).first().select('email','name','id').then(user => {
+    res.status(200).json({user:user});
+  }).catch(error => {
+    res.status(500).json({ error });
   });
 });
 

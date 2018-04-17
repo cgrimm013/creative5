@@ -12,6 +12,11 @@ new Vue({
   el: '#app',
   router,
   store,
-  components: { App },
-  template: '<App/>'
+  components: {
+    App
+  },
+  render: h => h(App),
+  beforeCreate() {
+    this.$store.dispatch('initialize');
+  }
 })
