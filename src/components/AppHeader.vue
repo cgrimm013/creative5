@@ -51,4 +51,7 @@ export default {
 .right {
   float: right;
 }
+h3{
+  
+}
 </style>
